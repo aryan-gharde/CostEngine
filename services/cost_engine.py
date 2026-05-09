@@ -1,131 +1,278 @@
-from copy import deepcopy
+from __future__ import annotations
 
-RATES = {"Medium": 2000, "High": 3200}
-CATEGORY_SPLIT = {
-    "Structure": 0.40,
-    "Finishing": 0.30,
-    "MEP": 0.20,
-    "Labour": 0.10,
+import re
+import logging
+from datetime import datetime, date as _date_type
+from typing import Optional
+
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__
+# In-memory cache  {(material, location, date): result_dict}
+CACHE: dict[tuple[str, str, str], dict] = {}
+# Base prices (₹ per unit) — used as fallback / anchor
+BASE_PRICES: dict[str, float] = {
+    # Structure
+    "rcc frame": 850.0,
+    "steel reinforcement": 72000.0,   # per tonne, ~₹72/kg
+    "masonry": 420.0,
+    "waterproofing": 180.0,
+    # Finishing
+    "flooring": 120.0,
+    "paint and putty": 55.0,
+    "doors and windows": 9500.0,
+    "fixtures": 3200.0,
+    # MEP
+    "electrical": 220.0,
+    "plumbing": 310.0,
+    "fire and safety": 1800.0,
+    "hvac provisions": 1400.0,
+    # Labour
+    "civil labour": 650.0,
+    "skilled trades": 850.0,
+    "site supervision": 45000.0,
 }
 
+# City-level cost-of-living multiplier (relative to Pune baseline = 1.0)
+LOCATION_MULTIPLIERS: dict[str, float] = {
+    "mumbai": 1.28,
+    "delhi": 1.22,
+    "bangalore": 1.18,
+    "hyderabad": 1.12,
+    "chennai": 1.10,
+    "kolkata": 1.05,
+    "pune": 1.00,
+    "ahmedabad": 0.96,
+    "jaipur": 0.92,
+    "lucknow": 0.90,
+    "indore": 0.88,
+    "bhopal": 0.87,
+    "nagpur": 0.95,
+    "surat": 0.97,
+    "coimbatore": 0.93,
+}
 
-def _default_rows(category: str, category_total: float, area: float):
-    row_templates = {
-        "Structure": [("RCC frame", 0.46), ("Steel reinforcement", 0.26), ("Masonry", 0.18), ("Waterproofing", 0.10)],
-        "Finishing": [("Flooring", 0.28), ("Paint and putty", 0.18), ("Doors and windows", 0.24), ("Fixtures", 0.30)],
-        "MEP": [("Electrical", 0.36), ("Plumbing", 0.30), ("Fire and safety", 0.14), ("HVAC provisions", 0.20)],
-        "Labour": [("Civil labour", 0.55), ("Skilled trades", 0.28), ("Site supervision", 0.17)],
+# Annual inflation rate for construction materials (%)
+ANNUAL_INFLATION_RATE: float = 6.0   # 6 % per year ≈ 0.5 % per month
+BASE_REFERENCE_DATE: str = "2024-01-01"
+
+# HTTP request settings
+REQUEST_TIMEOUT: int = 8   # seconds
+SEARCH_URL: str = "https://html.duckduckgo.com/html/"
+USER_AGENT: str = (
+    "Mozilla/5.0 (compatible; PriceBot/1.0; +https://example.com/pricebot)"
+)
+# Public entry points
+
+def get_material_price(material: str, location: str, date: str) -> dict:
+    """
+    Master function.  Returns a price dict for *material* at *location*
+    on *date*.
+
+    Return shape
+    ------------
+    {
+        "price":      float,
+        "source":     "internet" | "fallback",
+        "location":   str,
+        "date":       str,
+        "confidence": "high" | "medium" | "low",
+        "reason":     str,
     }
-    rows = []
-    for idx, (name, share) in enumerate(row_templates[category], start=1):
-        quantity = round(max(area * share / 10, 1), 2)
-        amount = round(category_total * share)
-        price = round(amount / quantity, 2)
-        rows.append(
-            {
-                "id": f"{category.lower()}-{idx}",
-                "name": name,
-                "category": category,
-                "quantity": quantity,
-                "unit": "lot" if name in {"Site supervision", "Fire and safety"} else "unit",
-                "price": price,
-                "amount": amount,
-            }
+    """
+    material = material.strip().lower()
+    location = location.strip().lower()
+    date = _validate_date(date)
+
+    # 1. Try the web
+    raw_html = fetch_from_internet(material, location)
+    if raw_html:
+        result = normalize_price(raw_html, material, location, date)
+        if result:
+            return result
+
+    # 2. Fall back to built-in table
+    return fallback_price(material, location, date)
+
+
+def get_cached_price(material: str, location: str, date: str) -> dict:
+    """
+    Cached wrapper around get_material_price.
+    Subsequent calls with identical (material, location, date) are free.
+    """
+    key = (material.strip().lower(), location.strip().lower(), _validate_date(date))
+    if key not in CACHE:
+        CACHE[key] = get_material_price(*key)
+    return CACHE[key]
+
+# Sub-functions
+
+def fetch_from_internet(material: str, location: str) -> Optional[str]:
+    """
+    Issue a DuckDuckGo HTML search for the current market price of *material*
+    in *location*.  Returns raw HTML text on success, None on any failure.
+    """
+    query = f"{material} price per unit {location} India construction 2024"
+    try:
+        response = requests.post(
+            SEARCH_URL,
+            data={"q": query, "kl": "in-en"},
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
         )
-    return rows
+        response.raise_for_status()
+        logger.debug("fetch_from_internet: got %d bytes for '%s'", len(response.text), material)
+        return response.text
+    except requests.exceptions.Timeout:
+        logger.warning("fetch_from_internet: timeout for material='%s' location='%s'", material, location)
+    except requests.exceptions.RequestException as exc:
+        logger.warning("fetch_from_internet: request failed — %s", exc)
+    return None
 
 
-def calculate_estimate(project, line_items=None, risk_buffer=None, material_prices=None):
-    quality = project.quality_tier if hasattr(project, "quality_tier") else project.get("quality_tier", "Medium")
-    area = float(project.area if hasattr(project, "area") else project.get("area", 0))
-    floors = int(project.floors if hasattr(project, "floors") else project.get("floors", 1))
-    finish_level = project.finish_level if hasattr(project, "finish_level") else project.get("finish_level", "Standard")
-    preferences = project.material_preferences if hasattr(project, "material_preferences") else project.get("material_preferences", [])
+def normalize_price(raw_data: str, material: str, location: str, date: str) -> Optional[dict]:
+    """
+    Parse ₹ values from *raw_data* (HTML), compute average, and return a
+    structured price dict.  Returns None if no usable prices are found.
+    """
+    try:
+        soup = BeautifulSoup(raw_data, "html.parser")
+        text = soup.get_text(separator=" ")
+    except Exception as exc:
+        logger.warning("normalize_price: HTML parse error — %s", exc)
+        return None
 
-    custom_rate = project.custom_rate_per_sqft if hasattr(project, "custom_rate_per_sqft") else project.get("custom_rate_per_sqft")
-    rate = float(custom_rate) if custom_rate else RATES.get(quality, RATES["Medium"])
-    finish_multiplier = {"Basic": 0.94, "Standard": 1.0, "Premium": 1.12, "Luxury": 1.22}.get(finish_level, 1.0)
-    floor_complexity = 1 + max(floors - 1, 0) * 0.015
-    material_multiplier = 1 + min(len(preferences), 5) * 0.01
-    base_cost = area * rate * finish_multiplier * floor_complexity * material_multiplier
+    # Match patterns like ₹1,200 / Rs. 1200 / INR 1,200
+    patterns = [
+        r"(?:₹|Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)",   # ₹1,200.50
+        r"([\d,]+(?:\.\d{1,2})?)\s*(?:per|/)\s*(?:sq\.?ft|sqft|unit|kg|ton|bag)",
+    ]
+    prices: list[float] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            raw_val = match.group(1).replace(",", "")
+            try:
+                val = float(raw_val)
+                # Sanity-check: ignore implausibly tiny or huge numbers
+                if 1.0 <= val <= 10_000_000.0:
+                    prices.append(val)
+            except ValueError:
+                pass
 
-    if risk_buffer is None:
-        risk_buffer = 0.12 if quality == "Medium" else 0.16
-    risk_buffer = max(0.10, min(float(risk_buffer), 0.20))
+    if not prices:
+        logger.debug("normalize_price: no ₹ values found for '%s'", material)
+        return None
 
-    if line_items:
-        rows = deepcopy(line_items)
-        for row in rows:
-            row["amount"] = round(float(row.get("quantity", 0)) * float(row.get("price", 0)))
+    # Use the trimmed mean of the central 80 % of values to reduce outlier impact
+    prices.sort()
+    trim = max(1, len(prices) // 10)
+    trimmed = prices[trim: len(prices) - trim] if len(prices) > 4 else prices
+    avg_price = round(sum(trimmed) / len(trimmed), 2)
+
+    confidence = _confidence_from_sample_size(len(prices))
+    return {
+        "price": avg_price,
+        "source": "internet",
+        "location": location,
+        "date": date,
+        "confidence": confidence,
+        "reason": f"Parsed {len(prices)} price point(s) from web search; trimmed mean used.",
+    }
+
+
+def fallback_price(material: str, location: str, date: str) -> dict:
+    """
+    Return a price estimate from BASE_PRICES, adjusted for location and
+    time-based inflation.
+    """
+    material = material.strip().lower()
+    location = location.strip().lower()
+
+    # Look for the closest key match (substring search as fuzzy fallback)
+    base = _lookup_base_price(material)
+
+    loc_multiplier = LOCATION_MULTIPLIERS.get(location, 1.0)
+    time_factor = get_time_factor(date)
+    price = round(base * loc_multiplier * time_factor, 2)
+
+    known_location = location in LOCATION_MULTIPLIERS
+    confidence: str
+    if known_location and base != _default_base():
+        confidence = "medium"
+        reason = (
+            f"Fallback price: base ₹{base} × location {loc_multiplier} "
+            f"× time {round(time_factor, 4)} = ₹{price}."
+        )
     else:
-        rows = []
-        for category, share in CATEGORY_SPLIT.items():
-            rows.extend(_default_rows(category, base_cost * share, area))
-
-    subtotal = round(sum(row["amount"] for row in rows))
-    risk_amount = round(subtotal * risk_buffer)
-    total = subtotal + risk_amount
-    categories = []
-    for category in CATEGORY_SPLIT:
-        total_for_category = round(sum(row["amount"] for row in rows if row["category"] == category))
-        categories.append({"name": category, "value": total_for_category})
+        confidence = "low"
+        reason = (
+            f"Fallback price (generic estimate): base ₹{base} "
+            f"× location {loc_multiplier} × time {round(time_factor, 4)} = ₹{price}. "
+            + ("Location multiplier unavailable; defaulted to 1.0. " if not known_location else "")
+        )
 
     return {
-        "project": {
-            "name": project.name if hasattr(project, "name") else project.get("name"),
-            "location": project.location if hasattr(project, "location") else project.get("location"),
-            "area": area,
-            "floors": floors,
-            "quality_tier": quality,
-            "finish_level": finish_level,
-            "material_preferences": preferences,
-            "custom_rate_per_sqft": custom_rate,
-        },
-        "rate": rate,
-        "subtotal": subtotal,
-        "risk_buffer": risk_buffer,
-        "risk_amount": risk_amount,
-        "total_cost": total,
-        "cost_per_sqft": round(total / area, 2) if area else 0,
-        "min_cost": round(total * 0.92),
-        "expected_cost": total,
-        "max_cost": round(total * 1.14),
-        "categories": categories,
-        "line_items": rows,
-        "material_prices": material_prices or {},
+        "price": price,
+        "source": "fallback",
+        "location": location,
+        "date": date,
+        "confidence": confidence,
+        "reason": reason,
     }
 
 
-def run_scenario(estimate, delay_months=0, quality_tier="Medium"):
-    updated = deepcopy(estimate)
-    current_quality = estimate.get("project", {}).get("quality_tier", "Medium")
-    old_rate = RATES.get(current_quality, RATES["Medium"])
-    new_rate = RATES.get(quality_tier, old_rate)
-    quality_factor = new_rate / old_rate if old_rate else 1
-    delay_factor = 1 + (int(delay_months) * 0.012)
-    factor = quality_factor * delay_factor
+def get_time_factor(date: str) -> float:
+    """
+    Compute a simple compounding inflation multiplier between
+    BASE_REFERENCE_DATE and *date*.
 
-    for row in updated.get("line_items", []):
-        row["price"] = round(float(row["price"]) * factor, 2)
-        row["amount"] = round(float(row["quantity"]) * float(row["price"]))
+    Formula: (1 + monthly_rate) ^ months_elapsed
+    """
+    try:
+        target = datetime.strptime(_validate_date(date), "%Y-%m-%d").date()
+        reference = datetime.strptime(BASE_REFERENCE_DATE, "%Y-%m-%d").date()
+    except ValueError:
+        return 1.0
 
-    updated["project"]["quality_tier"] = quality_tier
-    updated["subtotal"] = round(sum(row["amount"] for row in updated.get("line_items", [])))
-    updated["risk_amount"] = round(updated["subtotal"] * float(updated.get("risk_buffer", 0.12)))
-    updated["total_cost"] = updated["subtotal"] + updated["risk_amount"]
-    area = updated.get("project", {}).get("area", 1)
-    updated["cost_per_sqft"] = round(updated["total_cost"] / area, 2)
-    updated["min_cost"] = round(updated["total_cost"] * 0.92)
-    updated["expected_cost"] = updated["total_cost"]
-    updated["max_cost"] = round(updated["total_cost"] * 1.14)
-    updated["categories"] = [
-        {"name": category, "value": round(sum(row["amount"] for row in updated["line_items"] if row["category"] == category))}
-        for category in CATEGORY_SPLIT
-    ]
-    updated["scenario"] = {
-        "delay_months": delay_months,
-        "quality_tier": quality_tier,
-        "inflation_factor": round(delay_factor, 4),
-        "quality_factor": round(quality_factor, 4),
-    }
-    return updated
+    months_elapsed = (target.year - reference.year) * 12 + (target.month - reference.month)
+    monthly_rate = ANNUAL_INFLATION_RATE / 100.0 / 12.0
+    factor = (1 + monthly_rate) ** months_elapsed
+    return round(factor, 6)
+    
+# Internal helpers
+
+def _validate_date(date: str) -> str:
+    """Ensure date is YYYY-MM-DD; fall back to today on parse failure."""
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+        return date
+    except (ValueError, TypeError):
+        today = _date_type.today().isoformat()
+        logger.warning("_validate_date: invalid date '%s', defaulting to %s", date, today)
+        return today
+
+
+def _lookup_base_price(material: str) -> float:
+    """
+    Exact-key lookup first, then substring match, then generic default.
+    """
+    if material in BASE_PRICES:
+        return BASE_PRICES[material]
+    for key, val in BASE_PRICES.items():
+        if key in material or material in key:
+            return val
+    return _default_base()
+
+
+def _default_base() -> float:
+    """Generic fallback when the material is completely unknown."""
+    return 500.0
+
+
+def _confidence_from_sample_size(n: int) -> str:
+    if n >= 5:
+        return "high"
+    if n >= 2:
+        return "medium"
+    return "low"
