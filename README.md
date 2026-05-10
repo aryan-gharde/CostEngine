@@ -71,6 +71,67 @@ set VITE_API_URL=http://127.0.0.1:8000
 
 Open the Vite URL, usually `http://localhost:5173`.
 
+## Render Deployment
+
+This repo is a monorepo with two Render services:
+
+- `backend` as a Python/FastAPI Web Service
+- `frontend` as a Static Site
+
+The included `render.yaml` can be used as a Render Blueprint.
+
+### Option A: Deploy With Blueprint
+
+1. Push this repo to GitHub.
+2. In Render, choose **New > Blueprint**.
+3. Select the GitHub repo.
+4. Render will detect `render.yaml` and create:
+   - `cost-estimation-engine-api`
+   - `cost-estimation-engine`
+5. When prompted, add `LLAMA_API_KEY` if you have one. If you skip it, AI Advisor still works with the local fallback.
+
+### Option B: Create Services Manually
+
+Backend Web Service:
+
+```text
+Root Directory: backend
+Runtime: Python
+Build Command: pip install -r requirements.txt
+Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+Backend environment variables:
+
+```text
+PYTHON_VERSION=3.12.7
+FRONTEND_URL=https://YOUR_FRONTEND_SERVICE.onrender.com
+LLAMA_API_KEY=your_huggingface_key_optional
+DATABASE_URL=your_render_postgres_url_optional
+```
+
+Frontend Static Site:
+
+```text
+Root Directory: frontend
+Build Command: npm install && npm run build
+Publish Directory: dist
+```
+
+Frontend environment variable:
+
+```text
+VITE_API_URL=https://YOUR_BACKEND_SERVICE.onrender.com
+```
+
+### Database Note
+
+The app defaults to SQLite, which will run on Render but is not persistent across deploys/restarts on free ephemeral storage. For a real deployment, create a Render PostgreSQL database and set `DATABASE_URL` on the backend service.
+
+### CORS Note
+
+The backend allows local development origins, the configured `FRONTEND_URL`, and Render `*.onrender.com` origins.
+
 ## Main API Endpoints
 
 - `POST /auth/signup`

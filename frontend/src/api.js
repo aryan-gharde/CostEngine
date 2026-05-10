@@ -20,7 +20,12 @@ export async function api(path, options = {}) {
   });
 
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { detail: text || "Request failed" };
+  }
   if (!response.ok) {
     throw new ApiError(data?.detail || "Request failed", response.status);
   }
@@ -48,4 +53,15 @@ export const endpoints = {
     files.forEach((file) => formData.append("files", file));
     return api("/documents/analyze", { method: "POST", body: formData });
   },
+  uploadPlan: ({ projectId, file, demoSample = false }) => {
+    const formData = new FormData();
+    formData.append("project_id", projectId);
+    formData.append("demo_sample", demoSample ? "true" : "false");
+    if (file) formData.append("file", file);
+    return api("/upload-plan", { method: "POST", body: formData });
+  },
+  detectLayout: (payload) => api("/detect-layout", { method: "POST", body: JSON.stringify(payload) }),
+  relabelZones: (payload) => api("/relabel-zones", { method: "POST", body: JSON.stringify(payload) }),
+  confirmLayout: (payload) => api("/confirm-layout", { method: "POST", body: JSON.stringify(payload) }),
+  estimateFlat: (payload) => api("/estimate-flat", { method: "POST", body: JSON.stringify(payload) }),
 };

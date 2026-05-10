@@ -1,7 +1,9 @@
 import { CalendarDays, Layers, MapPin, Plus, Ruler, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Button from "../components/Button";
 import CostDashboard from "../components/CostDashboard";
+import EstimationModes from "../components/EstimationModes";
+import FlatWiseEstimator from "../components/FlatWiseEstimator";
 import PricePanel from "../components/PricePanel";
 import ProjectWizard from "../components/ProjectWizard";
 import ScenarioPanel from "../components/ScenarioPanel";
@@ -12,6 +14,11 @@ import { money, shortMoney } from "../utils";
 export default function Projects() {
   const { projects, selectedProject, setSelectedProject } = useAppStore();
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [activeMode, setActiveMode] = useState("overall");
+
+  useEffect(() => {
+    setActiveMode("overall");
+  }, [selectedProject?.id]);
 
   return (
     <div className="space-y-6">
@@ -79,10 +86,35 @@ export default function Projects() {
 
       {selectedProject ? (
         <>
-          <CostDashboard project={selectedProject} />
-          <PricePanel />
-          <ScenarioPanel />
-          <VersionPanel />
+          <EstimationModes activeMode={activeMode} onSelect={setActiveMode} />
+          {activeMode === "overall" ? (
+            <>
+              <CostDashboard project={selectedProject} />
+              <PricePanel />
+              <ScenarioPanel />
+              <VersionPanel />
+            </>
+          ) : null}
+          {activeMode === "flat" ? <FlatWiseEstimator project={selectedProject} /> : null}
+          {activeMode === "building" || activeMode === "floor" ? (
+            <section className="glass-panel p-8">
+              <p className="text-sm font-semibold uppercase tracking-wide text-[#4F46E5]">
+                {activeMode === "building" ? "Building Wise" : "Floor Wise"} estimation
+              </p>
+              <h2 className="mt-2 text-2xl font-bold text-[#111827]">Structured workspace placeholder</h2>
+              <p className="mt-3 max-w-3xl text-sm leading-6 text-[#64748B]">
+                This mode is intentionally staged for the demo. It opens a real project-level workspace and can later hold repeated-floor templates, tower comparisons, stack-level escalation, and trade packages.
+              </p>
+              <div className="mt-6 grid gap-3 md:grid-cols-3">
+                {["Scope matrix", "Repeated area rules", "Package comparison"].map((item) => (
+                  <button key={item} type="button" className="rounded-2xl border border-slate-200 bg-white/82 p-5 text-left shadow-sm transition hover:border-[#4F46E5]/40 hover:bg-white">
+                    <p className="font-bold text-[#111827]">{item}</p>
+                    <p className="mt-2 text-sm leading-6 text-[#64748B]">Interactive placeholder ready for next implementation phase.</p>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
         </>
       ) : (
         <div className="rounded-lg border border-slate-200 bg-white p-12 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">

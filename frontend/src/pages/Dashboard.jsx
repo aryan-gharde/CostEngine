@@ -22,12 +22,16 @@ export default function Dashboard() {
     return { total, area, avg: area ? total / area : 0, risk };
   }, [projects]);
 
-  const atRiskProjects = projects.filter((project) => Number(project.estimate?.risk_buffer || 0) >= 0.15);
+  const atRiskProjects = useMemo(() => projects.filter((project) => Number(project.estimate?.risk_buffer || 0) >= 0.15), [projects]);
 
-  const chartData = projects.map((project) => ({
-    name: project.name.length > 14 ? `${project.name.slice(0, 14)}...` : project.name,
-    cost: Math.round((project.estimate?.total_cost || 0) / 100000),
-  }));
+  const chartData = useMemo(
+    () =>
+      projects.map((project) => ({
+        name: project.name.length > 14 ? `${project.name.slice(0, 14)}...` : project.name,
+        cost: Math.round((project.estimate?.total_cost || 0) / 100000),
+      })),
+    [projects]
+  );
 
   return (
     <div className="space-y-6">
@@ -158,7 +162,7 @@ export default function Dashboard() {
                 <XAxis dataKey="name" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
                 <Tooltip formatter={(value) => [`Rs. ${value} L`, "Cost"]} />
-                <Bar dataKey="cost" fill="#0f766e" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="cost" fill="#6366F1" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

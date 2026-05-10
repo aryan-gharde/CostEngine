@@ -7,7 +7,7 @@ import MetricCard from "./MetricCard";
 import { useAppStore } from "../store/useAppStore";
 import { money, percent, shortMoney } from "../utils";
 
-const COLORS = ["#0f766e", "#d97706", "#2563eb", "#475569"];
+const COLORS = ["#6366F1", "#22D3EE", "#818CF8", "#9CA3AF"];
 const tabs = ["Structure", "Finishing", "MEP", "Labour"];
 
 export default function CostDashboard({ project }) {
@@ -29,8 +29,8 @@ export default function CostDashboard({ project }) {
   }, [project?.id, project?.estimate]);
 
   const estimate = project?.estimate;
-  const activeRows = lineItems.filter((row) => row.category === activeTab);
-  const localSubtotal = useMemo(() => lineItems.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.price || 0), 0), [lineItems]);
+  const rowAmount = (row) => Number(row.quantity || 0) * (1 + Number(row.waste_percent || 0)) * Number(row.price || 0);
+  const localSubtotal = useMemo(() => lineItems.reduce((sum, row) => sum + rowAmount(row), 0), [lineItems]);
   const localTotal = Math.round(localSubtotal * (1 + Number(riskBuffer || 0)));
   const savedTotal = Number(estimate?.total_cost || 0);
   const workingDelta = localTotal - savedTotal;
@@ -41,21 +41,35 @@ export default function CostDashboard({ project }) {
       lineItems
         .filter((row) => {
           const before = original.get(row.id);
-          return !before || Number(before.quantity) !== Number(row.quantity) || Number(before.price) !== Number(row.price);
+          return !before || Number(before.quantity) !== Number(row.quantity) || Number(before.price) !== Number(row.price) || Number(before.waste_percent || 0) !== Number(row.waste_percent || 0);
         })
         .map((row) => row.id)
     );
   }, [estimate?.line_items, lineItems]);
 
+  const rowsByCategory = useMemo(() => {
+    const grouped = Object.fromEntries(tabs.map((category) => [category, []]));
+    for (const row of lineItems) {
+      if (!grouped[row.category]) grouped[row.category] = [];
+      grouped[row.category].push(row);
+    }
+    return grouped;
+  }, [lineItems]);
+
+  const activeRows = rowsByCategory[activeTab] || [];
   const categoryTotals = useMemo(
     () =>
-      tabs.map((category) => ({
-        name: category,
-        rows: lineItems.filter((row) => row.category === category).length,
-        value: Math.round(lineItems.filter((row) => row.category === category).reduce((sum, row) => sum + Number(row.amount || 0), 0)),
-      })),
-    [lineItems]
+      tabs.map((category) => {
+        const rows = rowsByCategory[category] || [];
+        return {
+          name: category,
+          rows: rows.length,
+          value: Math.round(rows.reduce((sum, row) => sum + Number(row.amount || 0), 0)),
+        };
+      }),
+    [rowsByCategory]
   );
+  const activeCategoryTotal = useMemo(() => categoryTotals.find((item) => item.name === activeTab)?.value || 0, [activeTab, categoryTotals]);
 
   const workingEstimate = useMemo(
     () => ({
@@ -81,7 +95,11 @@ export default function CostDashboard({ project }) {
           ? {
               ...row,
               [key]: value,
-              amount: Math.round(Number(key === "quantity" ? value : row.quantity) * Number(key === "price" ? value : row.price)),
+              amount: Math.round(
+                Number(key === "quantity" ? value : row.quantity) *
+                  (1 + Number(key === "waste_percent" ? value : row.waste_percent || 0)) *
+                  Number(key === "price" ? value : row.price)
+              ),
             }
           : row
       )
@@ -97,6 +115,7 @@ export default function CostDashboard({ project }) {
         name: `New ${activeTab} item`,
         category: activeTab,
         quantity: 1,
+        waste_percent: 0.03,
         unit: "unit",
         price: 0,
         amount: 0,
@@ -254,7 +273,16 @@ export default function CostDashboard({ project }) {
                       <input disabled={!editMode} type="number" min="0" className="w-32 rounded-md border border-slate-200 bg-white px-2 py-2 disabled:opacity-70 dark:border-slate-700 dark:bg-slate-950" value={row.price} onChange={(event) => updateRow(row.id, "price", event.target.value)} />
                     </td>
                     <td>
-                      <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">2.5%</span>
+                      <input
+                        disabled={!editMode}
+                        type="number"
+                        min="0"
+                        max="25"
+                        step="0.5"
+                        className="w-24 rounded-md border border-slate-200 bg-white px-2 py-2 disabled:opacity-70 dark:border-slate-700 dark:bg-slate-950"
+                        value={Math.round(Number(row.waste_percent || 0) * 1000) / 10}
+                        onChange={(event) => updateRow(row.id, "waste_percent", Number(event.target.value || 0) / 100)}
+                      />
                     </td>
                     <td>
                       <span className={`rounded-md px-2 py-1 text-xs font-bold ${changedRows.has(row.id) ? "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"}`}>
@@ -276,7 +304,7 @@ export default function CostDashboard({ project }) {
                 ))}
                 <tr className="bg-slate-100 font-bold dark:bg-slate-950">
                   <td className="px-5 py-4" colSpan={6}>{activeTab} subtotal</td>
-                  <td className="text-right">{shortMoney(categoryTotals.find((item) => item.name === activeTab)?.value || 0)}</td>
+                  <td className="text-right">{shortMoney(activeCategoryTotal)}</td>
                   <td />
                 </tr>
               </tbody>

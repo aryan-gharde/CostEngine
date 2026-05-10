@@ -21,7 +21,7 @@ export const useAppStore = create((set, get) => ({
   versions: [],
   materialPrices: initialPriceMap,
   templates: {},
-  darkMode: localStorage.getItem("ccip_theme") === "dark",
+  darkMode: false,
   loading: {},
   toast: null,
 
@@ -35,9 +35,8 @@ export const useAppStore = create((set, get) => ({
     set({ user, toast: { type: "success", message: "Profile settings saved" } });
   },
   toggleTheme: () => {
-    const next = !get().darkMode;
-    localStorage.setItem("ccip_theme", next ? "dark" : "light");
-    set({ darkMode: next });
+    localStorage.setItem("ccip_theme", "light");
+    set({ darkMode: false });
   },
 
   authenticate: async (mode, payload) => {

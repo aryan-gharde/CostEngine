@@ -24,3 +24,4 @@ def get_templates():
 @router.post("/templates")
 def update_templates(payload: TemplateUpdateRequest):
     return set_config("templates", payload.templates)
+
