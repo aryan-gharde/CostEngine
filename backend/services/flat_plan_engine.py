@@ -398,6 +398,130 @@ def _demo_rooms(area=1250):
     return output
 
 
+def _room_area_default(room_type: str, base_area: float):
+    ratios = {
+        "living": 0.18,
+        "bedroom": 0.12,
+        "kitchen": 0.08,
+        "bathroom": 0.045,
+        "balcony": 0.06,
+        "service": 0.04,
+    }
+    minimums = {"living": 120, "bedroom": 90, "kitchen": 55, "bathroom": 32, "balcony": 35, "service": 28}
+    return max(minimums.get(room_type, 35), float(base_area) * ratios.get(room_type, 0.06))
+
+
+def _calculated_room_label(room_type: str, count: int):
+    return _room_label_for_type(room_type, count)
+
+
+def _counts_from_hints_and_dxf(label_hints: dict | None, dxf: dict | None):
+    label_hints = label_hints or {}
+    dxf = dxf or {}
+    return {
+        "living": max(int(label_hints.get("halls") or 0), int(dxf.get("halls") or 0), 1 if (label_hints.get("has_label_hint") or dxf.get("labels")) else 0),
+        "bedroom": max(int(label_hints.get("bedrooms") or 0), int(dxf.get("bedrooms") or 0)),
+        "kitchen": max(int(label_hints.get("kitchens") or 0), int(dxf.get("kitchens") or 0)),
+        "bathroom": max(int(label_hints.get("bathrooms") or 0), int(dxf.get("bathrooms") or 0)),
+        "balcony": int(label_hints.get("outdoor_zones") or 0),
+        "service": int(label_hints.get("service_zones") or 0) + int(label_hints.get("stair_zones") or 0),
+    }
+
+
+def _area_from_room_text(text: str):
+    values = [float(match) for match in AREA_VALUE_RE.findall(_normalize_arch_text(text))]
+    values = [value for value in values if 20 <= value <= 1500]
+    return values[0] if values else None
+
+
+def _calculated_rooms_from_counts(base_area: float, label_hints: dict | None = None, dxf: dict | None = None):
+    counts = _counts_from_hints_and_dxf(label_hints, dxf)
+    specs = []
+    for room_type in ("living", "bedroom", "kitchen", "bathroom", "balcony", "service"):
+        for _ in range(max(0, counts.get(room_type, 0))):
+            specs.append(room_type)
+    if not specs:
+        return []
+
+    cols = max(2, math.ceil(math.sqrt(len(specs) * 1.25)))
+    rows = math.ceil(len(specs) / cols)
+    margin_x = 5.0
+    margin_y = 5.0
+    gap = 2.2
+    cell_w = (125 - margin_x * 2 - gap * (cols - 1)) / cols
+    cell_h = (92 - margin_y * 2 - gap * (rows - 1)) / rows
+    counters = {}
+    rooms = []
+    total_default_area = sum(_room_area_default(room_type, base_area) for room_type in specs) or 1
+    target_area = float(base_area) * 0.82
+    area_scale = target_area / total_default_area
+    for index, room_type in enumerate(specs):
+        row = index // cols
+        col = index % cols
+        counters[room_type] = counters.get(room_type, 0) + 1
+        x = margin_x + col * (cell_w + gap)
+        y = margin_y + row * (cell_h + gap)
+        area = _room_area_default(room_type, base_area) * area_scale
+        aspect = {"living": 1.45, "bedroom": 1.18, "kitchen": 1.08, "bathroom": 0.9, "balcony": 1.8, "service": 1.0}.get(room_type, 1.1)
+        width = min(cell_w, max(cell_w * 0.62, math.sqrt(max(area, 1) / max(target_area, 1) * (125 * 92) * aspect)))
+        height = min(cell_h, max(cell_h * 0.55, width / aspect))
+        rooms.append({
+            "id": f"calc-zone-{index + 1}",
+            "type": room_type,
+            "label": _calculated_room_label(room_type, counters[room_type]),
+            "x": round(x, 1),
+            "y": round(y, 1),
+            "width": round(width, 1),
+            "height": round(height, 1),
+            "area_sqft": round(area, 1),
+            "confidence": 0.54,
+            "polygon": [[round(x, 1), round(y, 1)], [round(x + width, 1), round(y, 1)], [round(x + width, 1), round(y + height, 1)], [round(x, 1), round(y + height, 1)]],
+            "source": "calculated-count-layout",
+        })
+    return rooms
+
+
+def _rooms_from_dxf_text_entities(dxf: dict, base_area: float, label_hints: dict | None = None):
+    entities = dxf.get("text_entities") or []
+    bounds = dxf.get("geometry_bounds") or {}
+    width_units = float(bounds.get("width_units") or 0)
+    height_units = float(bounds.get("height_units") or 0)
+    if not entities or width_units <= 0 or height_units <= 0:
+        return _calculated_rooms_from_counts(base_area, label_hints, dxf)
+
+    min_x = float(bounds.get("min_x") or min(item["x"] for item in entities))
+    min_y = float(bounds.get("min_y") or min(item["y"] for item in entities))
+    counters = {}
+    rooms = []
+    for item in entities:
+        canonical = _canonical_room_label(item.get("text"))
+        if not canonical:
+            continue
+        room_type = canonical["type"]
+        counters[room_type] = counters.get(room_type, 0) + 1
+        x = max(3, min(118, ((float(item["x"]) - min_x) / width_units) * 112 + 6))
+        y = max(3, min(85, 88 - ((float(item["y"]) - min_y) / height_units) * 80))
+        area = _area_from_room_text(item.get("text")) or _room_area_default(room_type, base_area)
+        aspect = {"living": 1.45, "bedroom": 1.18, "kitchen": 1.08, "bathroom": 0.9, "balcony": 1.8, "service": 1.0}.get(room_type, 1.1)
+        width = max(7, min(24, math.sqrt(area / max(float(base_area), 1) * (125 * 92) * aspect)))
+        height = max(6, min(18, width / aspect))
+        rooms.append({
+            "id": f"dxf-zone-{len(rooms) + 1}",
+            "type": room_type,
+            "label": _calculated_room_label(room_type, counters[room_type]),
+            "x": round(max(0, min(125 - width, x - width / 2)), 1),
+            "y": round(max(0, min(92 - height, y - height / 2)), 1),
+            "width": round(width, 1),
+            "height": round(height, 1),
+            "area_sqft": round(area, 1),
+            "confidence": 0.72,
+            "source": "dxf-text-position",
+        })
+        room = rooms[-1]
+        room["polygon"] = [[room["x"], room["y"]], [round(room["x"] + room["width"], 1), room["y"]], [round(room["x"] + room["width"], 1), round(room["y"] + room["height"], 1)], [room["x"], round(room["y"] + room["height"], 1)]]
+    return rooms or _calculated_rooms_from_counts(base_area, label_hints, dxf)
+
+
 def _parse_dxf(path: Path):
     if not ezdxf:
         return {}
@@ -405,6 +529,7 @@ def _parse_dxf(path: Path):
         doc = ezdxf.readfile(path)
         msp = doc.modelspace()
         texts = []
+        text_entities = []
         line_count = 0
         vector_points = []
         for entity in msp:
@@ -418,11 +543,16 @@ def _parse_dxf(path: Path):
             elif kind in {"TEXT", "MTEXT"}:
                 text = entity.plain_text() if kind == "MTEXT" else entity.dxf.text
                 if text:
-                    texts.append(text.upper())
+                    clean_text = _normalize_arch_text(text)
+                    texts.append(clean_text)
+                    insert = _point_xy(getattr(entity.dxf, "insert", None))
+                    if insert:
+                        text_entities.append({"text": clean_text, "x": round(insert[0], 3), "y": round(insert[1], 3)})
         joined = " ".join(texts)
         area_summary = _area_summary_from_text_rows(texts)
         return {
             "labels": texts,
+            "text_entities": text_entities,
             "line_count": line_count,
             "has_dimensions": any(token in joined for token in ["SQFT", "SQ.FT", "FT", "AREA"]),
             "total_area": area_summary.get("total_area"),
@@ -2570,12 +2700,15 @@ def detect_layout(plan_id: str, project_area: float | None = None, reprocess_att
                 rooms = refined["rooms"]
                 graph_metrics = refined["graph"]
     elif dxf.get("labels"):
-        room_count = max(5, dxf.get("bedrooms", 2) + dxf.get("bathrooms", 2) + dxf.get("kitchens", 1) + dxf.get("halls", 1) + 1)
-        bedroom_count = max(1, dxf.get("bedrooms", 2))
-        bathroom_count = max(1, dxf.get("bathrooms", 2))
-        kitchen_count = max(1, dxf.get("kitchens", 1))
-        hall_count = 1
-        raw_zone_count = room_count + bathroom_count
+        cad_counts = _counts_from_hints_and_dxf(label_hints, dxf)
+        bedroom_count = cad_counts["bedroom"]
+        bathroom_count = cad_counts["bathroom"]
+        kitchen_count = cad_counts["kitchen"]
+        hall_count = cad_counts["living"]
+        service_zone_count = cad_counts["service"]
+        outdoor_zone_count = cad_counts["balcony"]
+        room_count = bedroom_count + kitchen_count + hall_count + outdoor_zone_count
+        raw_zone_count = room_count + bathroom_count + service_zone_count
         count_source = "cad-labels"
     else:
         room_count = 0
@@ -2587,12 +2720,24 @@ def detect_layout(plan_id: str, project_area: float | None = None, reprocess_att
         count_source = "none"
 
     if not (raster and raster["rooms"]):
-        rooms = _demo_rooms(base_area) if dxf.get("labels") or plan.get("demo") else []
-        if bedroom_count == 3:
-            rooms.append({"id": "room-8", "type": "bedroom", "label": "Bedroom 3", "x": 91, "y": 5, "width": 26, "height": 28, "area_sqft": 175, "confidence": 0.78, "polygon": [[91, 5], [117, 5], [117, 33], [91, 33]]})
+        if plan.get("demo"):
+            rooms = _demo_rooms(base_area)
+        elif dxf.get("labels"):
+            rooms = _rooms_from_dxf_text_entities(dxf, base_area, label_hints)
+        else:
+            rooms = []
         refined = _refine_rooms_with_wall_graph(rooms)
         rooms = refined["rooms"]
         graph_metrics = refined["graph"]
+        if rooms:
+            bedroom_count = sum(1 for room in rooms if room["type"] == "bedroom")
+            bathroom_count = sum(1 for room in rooms if room["type"] == "bathroom")
+            kitchen_count = sum(1 for room in rooms if room["type"] == "kitchen")
+            hall_count = sum(1 for room in rooms if room["type"] == "living")
+            outdoor_zone_count = sum(1 for room in rooms if room["type"] == "balcony")
+            service_zone_count = sum(1 for room in rooms if room["type"] == "service")
+            room_count = bedroom_count + kitchen_count + hall_count + outdoor_zone_count
+            raw_zone_count = len(rooms)
     wall_thickness_ft = float(learning.get("wall_thickness_ft") or (0.5 if plan["file_type"] != "dxf" else 0.45))
     wall_thickness_ft = round(max(0.35, min(wall_thickness_ft, 0.9)), 2)
     built_up_area = round(base_area * (1.0 + (0.02 if plan["file_type"] == "dxf" else 0)), 1)
