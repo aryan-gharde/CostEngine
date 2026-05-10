@@ -32,8 +32,11 @@ export default function Reports() {
     return labels.map((month, index) => ({ month, planned: Math.round((base * (0.1 + index * 0.045)) / 100000), cumulative: Math.round((base * (0.18 + index * 0.13)) / 100000) }));
   }, [portfolio.total]);
 
-  const projectBars = projects.map((item) => ({ name: item.name.slice(0, 14), cost: Math.round((item.estimate?.total_cost || 0) / 100000), risk: Math.round((item.estimate?.risk_amount || 0) / 100000) }));
-  const categoryData = project?.estimate?.categories || [];
+  const projectBars = useMemo(
+    () => projects.map((item) => ({ name: item.name.slice(0, 14), cost: Math.round((item.estimate?.total_cost || 0) / 100000), risk: Math.round((item.estimate?.risk_amount || 0) / 100000) })),
+    [projects]
+  );
+  const categoryData = useMemo(() => project?.estimate?.categories || [], [project?.estimate?.categories]);
 
   const exportCsv = () => {
     const rows = [
@@ -114,8 +117,8 @@ export default function Reports() {
                   <XAxis dataKey="name" />
                   <YAxis />
                   <Tooltip formatter={(value) => [`Rs. ${value} L`, ""]} />
-                  <Bar dataKey="cost" fill="#0f766e" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="risk" fill="#d97706" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="cost" fill="#6366F1" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="risk" fill="#22D3EE" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -141,7 +144,7 @@ export default function Reports() {
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie data={categoryData} dataKey="value" nameKey="name" outerRadius={95}>
-                    {categoryData.map((entry, index) => <Cell key={entry.name} fill={["#0f766e", "#d97706", "#2563eb", "#475569"][index % 4]} />)}
+                    {categoryData.map((entry, index) => <Cell key={entry.name} fill={["#6366F1", "#22D3EE", "#818CF8", "#9CA3AF"][index % 4]} />)}
                   </Pie>
                   <Tooltip formatter={(value) => money(value)} />
                 </PieChart>
@@ -185,16 +188,16 @@ export default function Reports() {
               <AreaChart data={curve}>
                 <defs>
                   <linearGradient id="planned" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0f766e" stopOpacity={0.45} />
-                    <stop offset="95%" stopColor="#0f766e" stopOpacity={0.05} />
+                    <stop offset="5%" stopColor="#6366F1" stopOpacity={0.45} />
+                    <stop offset="95%" stopColor="#6366F1" stopOpacity={0.05} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis dataKey="month" />
                 <YAxis />
                 <Tooltip formatter={(value) => [`Rs. ${value} L`, ""]} />
-                <Area type="monotone" dataKey="planned" stroke="#0f766e" fill="url(#planned)" strokeWidth={3} />
-                <Area type="monotone" dataKey="cumulative" stroke="#2563eb" fill="#2563eb22" strokeWidth={3} />
+                <Area type="monotone" dataKey="planned" stroke="#6366F1" fill="url(#planned)" strokeWidth={3} />
+                <Area type="monotone" dataKey="cumulative" stroke="#22D3EE" fill="#22D3EE22" strokeWidth={3} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -203,4 +206,3 @@ export default function Reports() {
     </div>
   );
 }
-

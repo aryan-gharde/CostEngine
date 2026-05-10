@@ -1,10 +1,10 @@
 import { Loader2 } from "lucide-react";
 
 const variants = {
-  primary: "bg-slate-950 text-white hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200",
-  secondary: "bg-white text-slate-900 border border-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-100 dark:border-slate-700 dark:hover:bg-slate-800",
-  danger: "bg-red-600 text-white hover:bg-red-700",
-  ghost: "text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800",
+  primary: "bg-[#4F46E5] text-white shadow-[0_10px_24px_rgba(79,70,229,0.18)] hover:bg-[#4338CA] hover:shadow-[0_12px_28px_rgba(79,70,229,0.24)]",
+  secondary: "glass-button",
+  danger: "bg-[#DC2626] text-white hover:bg-[#B91C1C]",
+  ghost: "text-[#475569] hover:bg-[#EEF2FF] hover:text-[#3730A3]",
 };
 
 export default function Button({ children, icon: Icon, loading, variant = "primary", className = "", ...props }) {
@@ -12,11 +12,10 @@ export default function Button({ children, icon: Icon, loading, variant = "prima
     <button
       {...props}
       disabled={props.disabled || loading}
-      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition disabled:opacity-60 ${variants[variant]} ${className}`}
+      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold disabled:opacity-60 ${variants[variant]} ${className}`}
     >
       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : Icon ? <Icon className="h-4 w-4" /> : null}
       <span>{children}</span>
     </button>
   );
 }
-
